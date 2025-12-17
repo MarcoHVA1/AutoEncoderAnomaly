@@ -1,78 +1,76 @@
+# app.py
 import streamlit as st
-import cv2
 import numpy as np
+import cv2
 import joblib
 import os
+from PIL import Image
 
 # ==============================
-# CONFIG
+# Config
 # ==============================
 IMG_SIZE = 64
-MODEL_PATH = "autoencoder.pkl"
-SCALER_PATH = "scaler.pkl"
-THRESHOLD = 0.02  # <-- zet hier je berekende threshold
+SAVE_DIR = "models/saved_models"
 
 # ==============================
-# LOAD MODEL
+# Load model & scaler & threshold
 # ==============================
 @st.cache_resource
-def load_model():
-    model = joblib.load(MODEL_PATH)
-    scaler = joblib.load(SCALER_PATH)
-    return model, scaler
+def load_model_scaler():
+    autoencoder = joblib.load(os.path.join(SAVE_DIR, "autoencoder.pkl"))
+    scaler = joblib.load(os.path.join(SAVE_DIR, "scaler.pkl"))
+    threshold = np.load(os.path.join(SAVE_DIR, "threshold.npy"))
+    return autoencoder, scaler, threshold
 
-autoencoder, scaler = load_model()
-
-# ==============================
-# IMAGE FUNCTIONS
-# ==============================
-def preprocess_image(image):
-    img = cv2.resize(image, (IMG_SIZE, IMG_SIZE))
-    img = img.astype("float32") / 255.0
-    img = img.flatten().reshape(1, -1)
-    img = scaler.transform(img)
-    return img
-
-
-def pixelate(img, blocks=16):
-    h, w = img.shape[:2]
-    temp = cv2.resize(img, (blocks, blocks))
-    return cv2.resize(temp, (w, h), interpolation=cv2.INTER_NEAREST)
-
+autoencoder, scaler, threshold = load_model_scaler()
 
 # ==============================
-# STREAMLIT UI
+# Helpers
 # ==============================
-st.set_page_config(page_title="Anomaly Detection", layout="centered")
+def preprocess_image(image: Image.Image):
+    img = image.resize((IMG_SIZE, IMG_SIZE))
+    img = np.array(img).astype(np.float32) / 255.0
+    return img.flatten()
 
-st.title("🧠 Anomaly Detection Dashboard")
-st.write("Upload een afbeelding om te controleren of deze **normaal** of een **anomaly** is.")
+def detect_anomaly(image_array: np.ndarray):
+    img_scaled = scaler.transform(image_array.reshape(1, -1))
+    recon = autoencoder.predict(img_scaled)
+    error = np.mean((img_scaled - recon)**2)
+    is_anomaly = error > threshold
+    return error, is_anomaly
 
-uploaded_file = st.file_uploader("Upload afbeelding", type=["jpg", "jpeg", "png"])
+# ==============================
+# Streamlit UI
+# ==============================
+st.title("Autoencoder Anomaly Detection")
 
-if uploaded_file is not None:
-    # Read image
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    image = cv2.imdecode(file_bytes, 1)
+st.write("Upload een afbeelding of kies een voorbeeld uit de testset.")
 
-    st.subheader("Originele afbeelding")
-    st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True)
+# Upload
+uploaded_file = st.file_uploader("Upload een afbeelding", type=["png", "jpg", "jpeg"])
 
-    # Predict
-    x = preprocess_image(image)
-    x_hat = autoencoder.predict(x)
+if uploaded_file:
+    img = Image.open(uploaded_file).convert("RGB")
+    st.image(img, caption="Uploaded Image", use_column_width=True)
+    
+    img_array = preprocess_image(img)
+    error, is_anomaly = detect_anomaly(img_array)
+    
+    st.write(f"Reconstructie fout: {error:.6f}")
+    st.write("⚠️ **Anomaly gedetecteerd!**" if is_anomaly else "✅ Normal")
 
-    error = np.mean((x - x_hat) ** 2)
-    label = "Anomaly 🚨" if error > THRESHOLD else "Normal ✅"
-
-    st.subheader("Resultaat")
-    st.write(f"**Classificatie:** {label}")
-    st.write(f"**Reconstructiefout (MSE):** {error:.6f}")
-    st.write(f"**Threshold:** {THRESHOLD}")
-
-    # Blur option
-    if error > THRESHOLD:
-        if st.button("🔒 Blur anomaly"):
-            blurred = pixelate(image)
-            st.subheader("Vervaagde afbeelding")
-            st.image(cv2.cvtColor(blurred, cv2.COLOR_BGR2RGB), use_container_width=True)
+# Optioneel: kies een testmap voorbeeld
+if st.checkbox("Gebruik voorbeeld uit testset"):
+    TEST_DIR = os.path.join("dataset", "test", "normal")
+    test_files = [f for f in os.listdir(TEST_DIR) if f.lower().endswith((".png",".jpg",".jpeg"))]
+    selected_file = st.selectbox("Kies een testbeeld", test_files)
+    if selected_file:
+        img_path = os.path.join(TEST_DIR, selected_file)
+        img = Image.open(img_path).convert("RGB")
+        st.image(img, caption="Test Image", use_column_width=True)
+        
+        img_array = preprocess_image(img)
+        error, is_anomaly = detect_anomaly(img_array)
+        
+        st.write(f"Reconstructie fout: {error:.6f}")
+        st.write("⚠️ **Anomaly gedetecteerd!**" if is_anomaly else "✅ Normal")
