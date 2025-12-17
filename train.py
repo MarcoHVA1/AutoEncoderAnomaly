@@ -10,9 +10,9 @@ import numpy as np
 import joblib
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, classification_report, confusion_matrix
-
+from sklearn.metrics import classification_report, confusion_matrix
 import cv2
+import json
 
 # ==============================
 # Config
@@ -29,9 +29,9 @@ RANDOM_STATE = 42
 # Data loading
 # ==============================
 def load_images_from_folder(folder):
-    images = []
     if not os.path.exists(folder):
         raise FileNotFoundError(f"Map bestaat niet: {folder}")
+    images = []
     for file in os.listdir(folder):
         path = os.path.join(folder, file)
         img = cv2.imread(path)
@@ -48,12 +48,12 @@ def load_images_from_folder(folder):
 def main():
     os.makedirs(SAVE_DIR, exist_ok=True)
 
-    # Train/val/test data laden
+    # --- Train / Val / Test data laden ---
     X_train = load_images_from_folder(os.path.join(DATASET_DIR, "train", "normal"))
     X_val = load_images_from_folder(os.path.join(DATASET_DIR, "val", "normal"))
     X_test_normal = load_images_from_folder(os.path.join(DATASET_DIR, "test", "normal"))
     X_test_anomaly = load_images_from_folder(os.path.join(DATASET_DIR, "test", "anomaly"))
-    
+
     X_test = np.vstack([X_test_normal, X_test_anomaly])
     y_test = np.array([0]*len(X_test_normal) + [1]*len(X_test_anomaly))
 
@@ -62,17 +62,13 @@ def main():
     print(f"Test normal   : {len(X_test_normal)}")
     print(f"Test anomaly  : {len(X_test_anomaly)}")
 
-    # ==============================
-    # Feature scaling
-    # ==============================
+    # --- Feature scaling ---
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_val_scaled = scaler.transform(X_val)
     X_test_scaled = scaler.transform(X_test)
 
-    # ==============================
-    # Autoencoder trainen (MLP)
-    # ==============================
+    # --- Autoencoder trainen (MLPRegressor) ---
     autoencoder = MLPRegressor(
         hidden_layer_sizes=HIDDEN_LAYERS,
         activation='relu',
@@ -84,18 +80,14 @@ def main():
 
     autoencoder.fit(X_train_scaled, X_train_scaled)
 
-    # ==============================
-    # Threshold bepalen (val)
-    # ==============================
+    # --- Threshold bepalen (val set) ---
     val_pred = autoencoder.predict(X_val_scaled)
     val_errors = np.mean((X_val_scaled - val_pred)**2, axis=1)
     threshold = np.percentile(val_errors, THRESHOLD_PERCENTILE)
     np.save(os.path.join(SAVE_DIR, "threshold.npy"), threshold)
     print(f"Threshold: {threshold:.6f}")
 
-    # ==============================
-    # Test evaluatie
-    # ==============================
+    # --- Test evaluatie ---
     test_pred = autoencoder.predict(X_test_scaled)
     test_errors = np.mean((X_test_scaled - test_pred)**2, axis=1)
     y_pred = (test_errors > threshold).astype(int)
@@ -107,26 +99,31 @@ def main():
     print("Confusion matrix:")
     print(cm)
 
-    # Metrics opslaan
+    # --- Metrics opslaan ---
+    accuracy = float((cm[0,0]+cm[1,1])/np.sum(cm))
+    precision = float(cm[1,1]/max(cm[0,1]+cm[1,1],1))
+    recall = float(cm[1,1]/max(cm[1,0]+cm[1,1],1))
+    f1 = float(2*precision*recall/max(precision+recall,1e-8))
+
     metrics = {
-        "accuracy": float((cm[0,0]+cm[1,1])/np.sum(cm)),
-        "precision": float(cm[1,1]/max(cm[0,1]+cm[1,1],1)),
-        "recall": float(cm[1,1]/max(cm[1,0]+cm[1,1],1)),
-        "f1": float(2*metrics['precision']*metrics['recall']/max(metrics['precision']+metrics['recall'],1e-8)) if 'precision' in locals() else 0,
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
         "mse_normal": float(test_errors[y_test==0].mean()),
         "mse_anomaly": float(test_errors[y_test==1].mean())
     }
 
     with open(os.path.join(SAVE_DIR, "metrics.json"), "w") as f:
-        import json
         json.dump(metrics, f, indent=2)
 
-    # Model & scaler opslaan
+    # --- Model & scaler opslaan ---
     joblib.dump(autoencoder, os.path.join(SAVE_DIR, "autoencoder.pkl"))
     joblib.dump(scaler, os.path.join(SAVE_DIR, "scaler.pkl"))
 
+    print("Model en scaler opgeslagen in:", os.path.abspath(SAVE_DIR))
     print("Training afgerond.")
 
-
+# ==============================
 if __name__ == "__main__":
     main()
