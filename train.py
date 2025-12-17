@@ -1,5 +1,5 @@
 """
-Autoencoder training voor anomaly detection met scikit-learn.
+Kleine autoencoder training voor anomaly detection (onder 25MB)
 Train op TRAIN/normal.
 Valideer op VAL/normal.
 Test op TEST/normal + TEST/anomaly.
@@ -20,8 +20,8 @@ import json
 IMG_SIZE = 64
 DATASET_DIR = "dataset"
 SAVE_DIR = "models/saved_models"
-MAX_ITER = 120
-HIDDEN_LAYERS = (128, 32, 128)
+MAX_ITER = 80             # minder iteraties voor kleiner model
+HIDDEN_LAYERS = (64, 16, 64)  # kleiner dan voorheen
 THRESHOLD_PERCENTILE = 95
 RANDOM_STATE = 42
 
@@ -68,7 +68,7 @@ def main():
     X_val_scaled = scaler.transform(X_val)
     X_test_scaled = scaler.transform(X_test)
 
-    # --- Autoencoder trainen (MLPRegressor) ---
+    # --- Kleine Autoencoder trainen ---
     autoencoder = MLPRegressor(
         hidden_layer_sizes=HIDDEN_LAYERS,
         activation='relu',
