@@ -1,119 +1,132 @@
+"""
+Autoencoder training voor anomaly detection met scikit-learn.
+Train op TRAIN/normal.
+Valideer op VAL/normal.
+Test op TEST/normal + TEST/anomaly.
+"""
+
 import os
-import cv2
 import numpy as np
 import joblib
-
 from sklearn.neural_network import MLPRegressor
-from sklearn.metrics import mean_squared_error
-from sklearn.cluster import KMeans, DBSCAN
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, classification_report, confusion_matrix
 
-# CONFIG
+import cv2
+
+# ==============================
+# Config
+# ==============================
 IMG_SIZE = 64
 DATASET_DIR = "dataset"
-MODEL_PATH = "autoencoder.pkl"
-SCALER_PATH = "scaler.pkl"
-
+SAVE_DIR = "models/saved_models"
+MAX_ITER = 120
+HIDDEN_LAYERS = (128, 32, 128)
+THRESHOLD_PERCENTILE = 95
 RANDOM_STATE = 42
 
-# IMAGE LOADING & PREPROCESSING
-def load_image(path):
-    """
-    Load image, resize, normalize and flatten
-    """
-    img = cv2.imread(path)
-    img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
-    img = img.astype("float32") / 255.0
-    return img.flatten()
-
-
+# ==============================
+# Data loading
+# ==============================
 def load_images_from_folder(folder):
     images = []
+    if not os.path.exists(folder):
+        raise FileNotFoundError(f"Map bestaat niet: {folder}")
     for file in os.listdir(folder):
-        if file.lower().endswith((".png", ".jpg", ".jpeg")):
-            images.append(load_image(os.path.join(folder, file)))
-    return np.array(images)
+        path = os.path.join(folder, file)
+        img = cv2.imread(path)
+        if img is None:
+            continue
+        img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+        img = img.astype("float32") / 255.0
+        images.append(img.flatten())  # flatten voor MLP
+    return np.array(images, dtype=np.float32)
+
+# ==============================
+# Main
+# ==============================
+def main():
+    os.makedirs(SAVE_DIR, exist_ok=True)
+
+    # Train/val/test data laden
+    X_train = load_images_from_folder(os.path.join(DATASET_DIR, "train", "normal"))
+    X_val = load_images_from_folder(os.path.join(DATASET_DIR, "val", "normal"))
+    X_test_normal = load_images_from_folder(os.path.join(DATASET_DIR, "test", "normal"))
+    X_test_anomaly = load_images_from_folder(os.path.join(DATASET_DIR, "test", "anomaly"))
+    
+    X_test = np.vstack([X_test_normal, X_test_anomaly])
+    y_test = np.array([0]*len(X_test_normal) + [1]*len(X_test_anomaly))
+
+    print(f"Train normal  : {len(X_train)}")
+    print(f"Val normal    : {len(X_val)}")
+    print(f"Test normal   : {len(X_test_normal)}")
+    print(f"Test anomaly  : {len(X_test_anomaly)}")
+
+    # ==============================
+    # Feature scaling
+    # ==============================
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_val_scaled = scaler.transform(X_val)
+    X_test_scaled = scaler.transform(X_test)
+
+    # ==============================
+    # Autoencoder trainen (MLP)
+    # ==============================
+    autoencoder = MLPRegressor(
+        hidden_layer_sizes=HIDDEN_LAYERS,
+        activation='relu',
+        solver='adam',
+        max_iter=MAX_ITER,
+        random_state=RANDOM_STATE,
+        verbose=True
+    )
+
+    autoencoder.fit(X_train_scaled, X_train_scaled)
+
+    # ==============================
+    # Threshold bepalen (val)
+    # ==============================
+    val_pred = autoencoder.predict(X_val_scaled)
+    val_errors = np.mean((X_val_scaled - val_pred)**2, axis=1)
+    threshold = np.percentile(val_errors, THRESHOLD_PERCENTILE)
+    np.save(os.path.join(SAVE_DIR, "threshold.npy"), threshold)
+    print(f"Threshold: {threshold:.6f}")
+
+    # ==============================
+    # Test evaluatie
+    # ==============================
+    test_pred = autoencoder.predict(X_test_scaled)
+    test_errors = np.mean((X_test_scaled - test_pred)**2, axis=1)
+    y_pred = (test_errors > threshold).astype(int)
+
+    print("\nClassification report:")
+    print(classification_report(y_test, y_pred, target_names=["Normal", "Anomaly"]))
+
+    cm = confusion_matrix(y_test, y_pred)
+    print("Confusion matrix:")
+    print(cm)
+
+    # Metrics opslaan
+    metrics = {
+        "accuracy": float((cm[0,0]+cm[1,1])/np.sum(cm)),
+        "precision": float(cm[1,1]/max(cm[0,1]+cm[1,1],1)),
+        "recall": float(cm[1,1]/max(cm[1,0]+cm[1,1],1)),
+        "f1": float(2*metrics['precision']*metrics['recall']/max(metrics['precision']+metrics['recall'],1e-8)) if 'precision' in locals() else 0,
+        "mse_normal": float(test_errors[y_test==0].mean()),
+        "mse_anomaly": float(test_errors[y_test==1].mean())
+    }
+
+    with open(os.path.join(SAVE_DIR, "metrics.json"), "w") as f:
+        import json
+        json.dump(metrics, f, indent=2)
+
+    # Model & scaler opslaan
+    joblib.dump(autoencoder, os.path.join(SAVE_DIR, "autoencoder.pkl"))
+    joblib.dump(scaler, os.path.join(SAVE_DIR, "scaler.pkl"))
+
+    print("Training afgerond.")
 
 
-# LOAD DATASET
-print("[INFO] Loading dataset...")
-
-X_train = load_images_from_folder(os.path.join(DATASET_DIR, "train", "normal"))
-X_val   = load_images_from_folder(os.path.join(DATASET_DIR, "val", "normal"))
-
-X_test_normal  = load_images_from_folder(os.path.join(DATASET_DIR, "test", "normal"))
-X_test_anomaly = load_images_from_folder(os.path.join(DATASET_DIR, "test", "anomaly"))
-
-X_test = np.vstack((X_test_normal, X_test_anomaly))
-y_test = np.array(
-    [0] * len(X_test_normal) + [1] * len(X_test_anomaly)
-)  # 0 = normal, 1 = anomaly
-
-
-# FEATURE SCALING
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_val   = scaler.transform(X_val)
-X_test  = scaler.transform(X_test)
-
-# AUTOENCODER MODEL
-print("[INFO] Training autoencoder...")
-
-autoencoder = MLPRegressor(
-    hidden_layer_sizes=(512, 128, 512),
-    activation="relu",
-    solver="adam",
-    max_iter=120,
-    random_state=RANDOM_STATE,
-    verbose=True
-)
-
-autoencoder.fit(X_train, X_train)
-
-# RECONSTRUCTION ERROR
-print("[INFO] Calculating reconstruction errors...")
-
-X_train_pred = autoencoder.predict(X_train)
-train_errors = np.mean((X_train - X_train_pred) ** 2, axis=1)
-
-X_test_pred = autoencoder.predict(X_test)
-test_errors = np.mean((X_test - X_test_pred) ** 2, axis=1)
-
-# THRESHOLD (95 PERCENTILE)
-threshold = np.percentile(train_errors, 95)
-
-y_pred = (test_errors > threshold).astype(int)
-
-
-# METRICS
-mse  = mean_squared_error(X_test, X_test_pred)
-rmse = np.sqrt(mse)
-
-print("\n===== AUTOENCODER RESULTS =====")
-print(f"MSE:  {mse:.6f}")
-print(f"RMSE: {rmse:.6f}")
-print(f"Threshold: {threshold:.6f}")
-print(f"Detected anomalies: {np.sum(y_pred)} / {len(y_pred)}")
-
-
-# K-MEANS COMPARISON
-print("\n[INFO] Running K-Means comparison...")
-
-kmeans = KMeans(n_clusters=2, random_state=RANDOM_STATE)
-kmeans_labels = kmeans.fit_predict(X_test)
-
-
-# DBSCAN COMPARISON
-print("[INFO] Running DBSCAN comparison...")
-
-dbscan = DBSCAN(eps=5, min_samples=10)
-dbscan_labels = dbscan.fit_predict(X_test)
-
-
-# Print clustering results
-print("\n[INFO] Saving model and scaler...")
-
-joblib.dump(autoencoder, MODEL_PATH)
-joblib.dump(scaler, SCALER_PATH)
-
-print("[DONE] Model training completed.")
+if __name__ == "__main__":
+    main()
